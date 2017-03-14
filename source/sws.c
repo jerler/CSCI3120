@@ -15,7 +15,17 @@
 #include "network.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
+#define RCB_QUEUE_SIZE 64		   /* max number of request control blocks in queue */
 
+struct RequestControlBlock {
+	int sequenceNumber;
+	int fileDescriptor;
+	FILE* fileHandle;
+	int lengthRemaining;
+	int quantum;
+}; 
+
+int globalSequence = 0;			  /* sequence number of next RCB */
 
 /* This function takes a file handle to a client, reads in the request, 
  *    parses the request, and sends back the requested file.  If the
@@ -65,7 +75,14 @@ static void serve_client( int fd ) {
     if( !fin ) {                                    /* check if successful */
       len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );  
       write( fd, buffer, len );                     /* if not, send err */
-    } else {                                        /* if so, send file */
+      fclose( fin);
+    }
+    else {                                        /* if so, add file to queue */
+    /* Determine size of file
+     * Allocate and initialize a request control block
+     * Add RCB to queue
+     * Send back response status */
+
       len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
       write( fd, buffer, len );
 
@@ -87,6 +104,8 @@ static void serve_client( int fd ) {
 }
 
 
+
+
 /* This function is where the program starts running.
  *    The function first parses its command line parameters to determine port #
  *    Then, it initializes, the network and enters the main loop.
@@ -100,13 +119,22 @@ static void serve_client( int fd ) {
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
+  char* schedType;
+  
+  struct RequestControlBlock queue[RCB_QUEUE_SIZE];	/* holds all RCBs */
 
   /* check for and process parameters 
+   * port number and scheduler
    */
-  if( ( argc < 2 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ) {
-    printf( "usage: sms <port>\n" );
+  if( ( argc < 3 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) || (sscanf(argv[2], "%s", schedType) < 1)) {
+    printf( "usage: sms <port> <scheduler>\n" );
     return 0;
   }
+  if((strcmp(schedType, "sjf") != 0) && (strcmp(schedType, "SJF") != 0)){
+    printf( "usage: schedule type must be sjf or SJF\n" );
+    return 0;
+  }   
+
 
   network_init( port );                             /* init network module */
 
@@ -116,5 +144,6 @@ int main( int argc, char **argv ) {
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
       serve_client( fd );                           /* process each client */
     }
+    
   }
 }
