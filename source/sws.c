@@ -11,26 +11,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>			   /* using fstat to get file size */
 
 #include "network.h"
+#include "scheduler.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
-#define RCB_QUEUE_SIZE 64		   /* max number of request control blocks in queue */
 
-struct RequestControlBlock {
-	int sequenceNumber;
-	int fileDescriptor;
-	FILE* fileHandle;
-	int lengthRemaining;
-	int quantum;
-}; 
-
-int globalSequence = 0;			  /* sequence number of next RCB */
+char* schedType;			   /* the type of scheduler to use */
 
 /* This function takes a file handle to a client, reads in the request, 
  *    parses the request, and sends back the requested file.  If the
  *    request is improper or the file is not available, the appropriate
  *    error is sent back.
+ * Changes for project: Instead of sending back the file, it creates an
+ * 	RCB block and adds it to the scheduler queue.
  * Parameters: 
  *             fd : the file descriptor to the client connection
  * Returns: None
@@ -42,6 +37,7 @@ static void serve_client( int fd ) {
   char *tmp;                                        /* error checking ptr */
   FILE *fin;                                        /* input file handle */
   int len;                                          /* length of data read */
+  int sz;					    /* size of file */
 
   if( !buffer ) {                                   /* 1st time, alloc buffer */
     buffer = malloc( MAX_HTTP_SIZE );
@@ -82,22 +78,27 @@ static void serve_client( int fd ) {
      * Allocate and initialize a request control block
      * Add RCB to queue
      * Send back response status */
+      struct stat st;
+      fstat(fd, &st);				     /* get stats of file from file descriptor */
+      sz = st.st_size;				     /* extract file size in bytes from stats */
+      
+      createRCB(fd, fin, sz, schedType);	     /* create RCB and add it to queue */
 
       len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
       write( fd, buffer, len );
 
-      do {                                          /* loop, read & send file */
-        len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  /* read file chunk */
-        if( len < 0 ) {                             /* check for errors */
-            perror( "Error while writing to client" );
-        } else if( len > 0 ) {                      /* if none, send chunk */
-          len = write( fd, buffer, len );
-          if( len < 1 ) {                           /* check for errors */
-            perror( "Error while writing to client" );
-          }
-        }
-      } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
-      fclose( fin );
+      //do {                                          /* loop, read & send file */
+        //len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  /* read file chunk */
+        //if( len < 0 ) {                             /* check for errors */
+          //  perror( "Error while writing to client" );
+        //} else if( len > 0 ) {                      /* if none, send chunk */
+          //len = write( fd, buffer, len );
+          //if( len < 1 ) {                           /* check for errors */
+            //perror( "Error while writing to client" );
+          //}
+        //}
+      //} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+      fclose( fin ); //file should not be closed here..
     }
   }
   close( fd );                                     /* close client connectuin*/
@@ -119,22 +120,26 @@ static void serve_client( int fd ) {
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
-  char* schedType;
-  
-  struct RequestControlBlock queue[RCB_QUEUE_SIZE];	/* holds all RCBs */
 
   /* check for and process parameters 
    * port number and scheduler
    */
-  if( ( argc < 3 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) || (sscanf(argv[2], "%s", schedType) < 1)) {
+  if( ( argc < 3 ) || ( sscanf( argv[1], "%d", &port ) < 1 )) {
     printf( "usage: sms <port> <scheduler>\n" );
     return 0;
   }
-  if((strcmp(schedType, "sjf") != 0) && (strcmp(schedType, "SJF") != 0)){
-    printf( "usage: schedule type must be sjf or SJF\n" );
+  schedType = argv[2];
+ 
+  /*for testing*/
+  if(strcmp(schedType, "test") == 0){
+	initializeQueue();
+	displayQueue(10);	
+	return 0;
+  }
+  if(strcmp(schedType, "SJF") != 0){
+    printf( "usage: schedule type must be SJF, or else 'test' for testing\n" );
     return 0;
   }   
-
 
   network_init( port );                             /* init network module */
 
