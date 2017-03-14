@@ -16,7 +16,7 @@
 #include "network.h"
 #include "scheduler.h"
 
-#define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
+
 
 char* schedType;			   /* the type of scheduler to use */
 
@@ -98,7 +98,7 @@ static void serve_client( int fd ) {
           //}
         //}
       //} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
-      fclose( fin ); //file should not be closed here..
+      //fclose( fin ); //file should not be closed here..
     }
   }
   close( fd );                                     /* close client connectuin*/
@@ -133,6 +133,7 @@ int main( int argc, char **argv ) {
   /*for testing*/
   if(strcmp(schedType, "test") == 0){
 	initializeQueue();
+	removeRCB(7);
 	displayQueue(10);	
 	return 0;
   }
