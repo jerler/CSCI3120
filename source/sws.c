@@ -87,21 +87,52 @@ static void serve_client( int fd ) {
       len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
       write( fd, buffer, len );
 
-      //do {                                          /* loop, read & send file */
-        //len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  /* read file chunk */
-        //if( len < 0 ) {                             /* check for errors */
-          //  perror( "Error while writing to client" );
-        //} else if( len > 0 ) {                      /* if none, send chunk */
-          //len = write( fd, buffer, len );
-          //if( len < 1 ) {                           /* check for errors */
-            //perror( "Error while writing to client" );
-          //}
-        //}
-      //} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
-      //fclose( fin ); //file should not be closed here..
     }
   }
-  close( fd );                                     /* close client connectuin*/
+
+}
+
+static int processNextJob(){
+	static char* buffer;
+	int len, maxRead;
+	int totalLen = 0;
+	struct RequestControlBlock* rcb = getNextJob(schedType);
+	if(rcb->sequenceNumber == -1){	/*No more jobs to process*/
+		free(rcb);
+		return 0;
+	}
+
+	if( !buffer ) {                                   /* 1st time, alloc buffer */
+    		buffer = malloc( MAX_HTTP_SIZE );
+    		if( !buffer ) {                                 /* error check */
+      			perror( "Error while allocating memory" );
+			return 1;
+    		}
+	}
+
+  	memset( buffer, 0, MAX_HTTP_SIZE );
+
+	do {                                          /* loop, read & send file */
+		/*set maximum number of bytes to read for this pass*/
+		if ((rcb->quantum - totalLen) < MAX_HTTP_SIZE){
+			maxRead = rcb->quantum - totalLen;
+		}
+		else {
+			maxRead = MAX_HTTP_SIZE;
+		}
+		len = fread( buffer, 1, maxRead, rcb->fileHandle );  /* read file chunk */
+		if( len < 0 ) {                             /* check for errors */
+			perror( "Error while writing to client" );
+		} else if( len > 0 ) {                      /* if none, send chunk */
+			len = write( rcb->fileDescriptor, buffer, len );
+			if( len < 1 ) {                           /* check for errors */
+				perror( "Error while writing to client" );
+			}
+		}
+		totalLen += len;
+      	} while( (len == MAX_HTTP_SIZE) && (totalLen < rcb->quantum) );         /* the last chunk < 8192 */
+      	updateRCB(schedType, totalLen, rcb);	/*scheduler handles rcb from here*/
+      	return 1;
 }
 
 
@@ -150,6 +181,7 @@ int main( int argc, char **argv ) {
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
       serve_client( fd );                           /* process each client */
     }
+    while(processNextJob());			    /* process the rcbs in the queue */
     
   }
 }

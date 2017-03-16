@@ -9,16 +9,9 @@
 
 
 
-struct RequestControlBlock {
-	int sequenceNumber;
-	int fileDescriptor;
-	FILE* fileHandle;
-	int lengthRemaining;
-	int quantum;
-}; 
 
-
-
+/*Sequence numbers: 
+ * empty spots have a sequenceNumber of -1 */
 int globalSequence = 0;			  		/* sequence number of next RCB */
 struct RequestControlBlock queue[RCB_QUEUE_SIZE];	/* holds all RCBs for the scheduler */
 
@@ -53,75 +46,83 @@ extern int createRCB(int fd, FILE* fh, int sz, char* type){
 		if (strcmp(type, "SJF") == 0){
 			rcb.quantum = sz; 
 		}
+		rcb.lock = 0;
 		queue[index] = rcb; 			//add rcb to queue
 		return 1;
 	}
 	return 0;					//queue was full
 }
 
-extern void removeRCB(int index){
+void removeRCB(int sequenceNumber){
+	int index = -1;
+	int i;
+	/*Find rcb*/
+	for (i = 0; i < RCB_QUEUE_SIZE; i++){
+		if(queue[i].sequenceNumber == sequenceNumber){
+			index = i;
+			break;
+		}
+	}
+	if (index == -1) {
+		perror("Tried to remove rcb but it doesn't exist.");
+		return;
+	}
 	queue[index].sequenceNumber = -1;
 	queue[index].fileDescriptor = -1;
-	if (queue[index].fileHandle) {
-		fclose( queue[index].fileHandle );
-	}
 	queue[index].fileHandle = NULL;
 	queue[index].lengthRemaining = 0;
 	queue[index].quantum = 0;
+	queue[index].lock = 0;
 }
 
-
-/* A lot of code in here was borrowed from serve_client code and might not be the most efficient*/
-extern int processNextRCB(char* type){
-	static char* buffer;
-	int len;
-
-	if( !buffer ) {                                   /* 1st time, alloc buffer */
-    		buffer = malloc( MAX_HTTP_SIZE );
-    		if( !buffer ) {                                 /* error check */
-      			perror( "Error while allocating memory" );
-			return 0;
-    		}
-	}
-
-  	memset( buffer, 0, MAX_HTTP_SIZE );
-
-	if (strcmp(type, "SJF") == 0){
-		/*Get the index of the shortest job*/
+extern struct RequestControlBlock* getNextJob(char* type){
+	struct RequestControlBlock* rcb;
+	if(strcmp(type, "SJF") == 0){
+		/*Get the shortest job*/
 		int i, sz;
 		int index = -1;
+
 		for (i = 0; i < RCB_QUEUE_SIZE; i++){
-			if (queue[i].sequenceNumber != -1){
+			if ((queue[i].sequenceNumber > -1) && (queue[i].lock == 0)){
 				if((index == -1) || (queue[i].lengthRemaining < sz)){
 					index = i;
 					sz = queue[i].lengthRemaining;
 				}
 			}
 		}
-		
-		/* Process shortest job
-		 * Note: we may want to modify this bit to work with all algorithms, based on quantum*/
-		do {                                          /* loop, read & send file */
-	        	len = fread( buffer, 1, MAX_HTTP_SIZE, queue[index].fileHandle);  /* read file chunk */
-			if( len < 0 ) {                             /* check for errors */
-				perror( "Error while writing to client" );
-			} else if( len > 0 ) {                      /* if none, send chunk */
-				len = write( queue[index].fileDescriptor, buffer, len );
-				if( len < 1 ) {                           /* check for errors */
-		    			perror( "Error while writing to client" );
-		  		}
-			}
-		} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+		if (index == -1) {	//no more jobs available!
+			struct RequestControlBlock empty;
+			empty.sequenceNumber = -1;
+			rcb = &empty;
+		}
+		else {
+			queue[index].lock = 1; 	/*lock rcb so it cannot be grabbed by another thread*/
+			rcb = &queue[index];
+		}	
+	
 
-		/*Remove shortest job*/
-		removeRCB(index);
+	}
+	return rcb;
+}
 
-		return 1;
+extern void updateRCB(char* type, int len, struct RequestControlBlock* rcb){
+	rcb->lengthRemaining -= len;
+	if (strcmp(type,"SJF") == 0){
+		if (rcb->lengthRemaining <= 0){
+			printf("Request %d completed", rcb->sequenceNumber);
+			fclose(rcb->fileHandle);
+			close(rcb->fileDescriptor);			
+			removeRCB(rcb->sequenceNumber);
+		}
+		else {
+			rcb->lock = 0; 	/*Unlock file*/
+			printf("Something went wrong processing %d with SJF.", rcb->sequenceNumber);
+		}
+
 	}
 
-	return 0;
-
 }
+
 
 
 

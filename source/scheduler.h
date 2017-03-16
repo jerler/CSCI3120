@@ -3,8 +3,18 @@
 
 #include <stdio.h>
 
-#define MAX_HTTP_SIZE 8192              /* size of buffer to allocate */
+
 #define RCB_QUEUE_SIZE 64		/* max number of request control blocks in queue */
+#define MAX_HTTP_SIZE 8192              /* size of buffer to allocate */
+
+struct RequestControlBlock {
+	int sequenceNumber;
+	int fileDescriptor;
+	FILE* fileHandle;
+	int lengthRemaining;
+	int quantum;
+	int lock;		/*set to 1 if being processed, 0 otherwise*/
+}; 
 
 extern int globalSequence;		/* The sequence number given to the next RCB */
 
@@ -25,21 +35,23 @@ extern void initializeQueue();
  */
 extern int createRCB(int fd, FILE* fh, int sz, char* type);
 
-/* This function resets an RCB to default values
- * It also handles closing the file stream if it is still open.
+/* This function resets an RCB to default values to make it available
  */ 
-extern void removeRCB(int index);
-
+void removeRCB(int index);
 
 /* This function will grab the next RCB (based on the scheduling type
- * input parameter), then read the file until the quantum is reached.
- * For SJF: 
- * 	- The job with the shortest length remaining is accessed
- * 	- The file is read and passed to the client
- * 	- The RCB is removed from the queue. 
- * The function returns 1 if successful, or 0 if there is an error.
+ * input parameter).
+ * It will return a pointer to the rcb and set the lock value to 1 so
+ * that it will not be grabbed again
  */
-extern int processRCB(char* type);
+extern struct RequestControlBlock* getNextJob(char* type);
+
+/* This function will update or remove the RCB after processing, based on scheduling type.
+ * It will subtract len from the lengthRemaining. 
+ * If there are still bytes to send the rcb will be unlocked (added back to the queue).
+ * Otherwise the rbc will be removed and the connection and file will be closed. 
+ */
+extern void updateRCB(char* type, int len, struct RequestControlBlock* rcb);
 
 
 
