@@ -1,4 +1,7 @@
 # CSCI3120
+Working on Round Robin algorithm
+(Anna Bullen March 22, 2017)
+
 Creating RCB structure and implementing shortest job first algorithm
 (Anna Bullen March 14, 2017 8:45am)
 
