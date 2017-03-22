@@ -1,7 +1,7 @@
 # Targets & general dependencies
 PROGRAM = sws
-HEADERS = network.h
-OBJS = network.o sws.o
+HEADERS = network.h scheduler.h
+OBJS = network.o scheduler.o sws.o
 ADD_OBJS = 
 
 # compilers, linkers, utilities, and flags
@@ -29,4 +29,4 @@ clean:
 
 zip:
 	rm -f sws.zip
-	zip sws.zip network.c network.h makefile
+	zip sws.zip network.c network.h scheduler.c scheduler.h makefile
