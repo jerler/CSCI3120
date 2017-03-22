@@ -6,8 +6,9 @@
 
 
 #define RCB_QUEUE_SIZE 	64
-#define MAX_HTTP_SIZE 	8192              /* size of buffer to allocate and the RR quantum */
-
+#define MAX_HTTP_SIZE 	8192            /* size of buffer to allocate */
+#define EIGHT_KB	8192		/* size of RR and high priority MLFB quantums */  
+#define SIXTY_FOUR_KB	65536		/* size of medium and low priority MLFB quantums */
 
 
 extern int globalSequence;		/* The sequence number given to the next RCB */

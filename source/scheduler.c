@@ -9,37 +9,40 @@
 
 int globalSequence = 0;			  		/* sequence number of next RCB */
 //struct RequestControlBlock queue[RCB_QUEUE_SIZE];	/* holds all RCBs for the scheduler */
-struct RequestControlBlock *firstRCB = NULL;		/* pointer to the first RCB in the queue */
 int queueSize = 0;					/* number of RCBs in queue */
+struct RequestControlBlock *firstRcb = NULL;		/* pointer to the first RCB in the queue */
+
+/*The following two pointers are only used with MLFB scheduler */
+struct RequestControlBlock *firstRcb64 = NULL;	/* pointer to the first RCB in the medium priority queue */
+struct RequestControlBlock *firstRcbRr = NULL; 	/* pointer to the first RCB in the low priority queue */
 
 /*for testing only*/
-/*extern void displayQueue(int n){
-	int i;
-	for(i = 0; i < n; i++){
-		printf("%d: %d\n", i, queue[i].sequenceNumber);
-	}
+extern void displayQueue(int n){
+	int i = 0;
+	struct RequestControlBlock *rcb  = firstRcb;
+	while(rcb != NULL){
+		printf("%d: %d\n", i, rcb->sequenceNumber);
+		rcb = rcb->next;
+		i++;		
+	} 
 }
 
-extern void initializeQueue(){
-	int i;
-	for(i = 0; i < RCB_QUEUE_SIZE; i++){
-		queue[i].sequenceNumber = -1;
-	}
-} */
-
+/* This function adds an RCB into the queue in order by length remaining, 
+ * where the job with the shortest length remaining is at the front of the queue 
+ */
 void addRcbSjf(struct RequestControlBlock *rcb){
-	if (firstRCB == NULL) {
+	if (firstRcb == NULL) {
 		rcb->next = NULL;
-		firstRCB = rcb;
+		firstRcb = rcb;
 		return;
 	}	
 	struct RequestControlBlock *prev;			
 	prev = NULL;
-	rcb->next = firstRCB;
+	rcb->next = firstRcb;
 	while((rcb->next != NULL)){
 		if (rcb->next->lengthRemaining > rcb->lengthRemaining){
 			if (prev == NULL){	/* add rcb to the front of the list */
-				firstRCB = rcb;						
+				firstRcb = rcb;						
 			}
 			else {
 				prev->next = rcb;
@@ -56,16 +59,18 @@ void addRcbSjf(struct RequestControlBlock *rcb){
 	}
 }
 
-void addRcbRr(struct RequestControlBlock *rcb){
-	if (firstRCB == NULL) {
+/* This funciton adds an RCB to the end of a queue. This function
+ * takes in a pointer to the first element of the queue in order to support MLFB 
+ */
+void addRcbToEnd(struct RequestControlBlock *rcb, struct RequestControlBlock *first){
+	if (firstRcb == NULL) {
 		rcb->next = NULL;
-		firstRCB = rcb;
+		firstRcb = rcb;
 		return;
 	}
 
-	struct RequestControlBlock *temp = firstRCB;
-	/* Go through the queue to find the end 
-	 * NOTE: We assume that the queue is non-empty. */
+	struct RequestControlBlock *temp = firstRcb;
+	/* Go through the queue to find the end  */
 	while(temp->next != NULL){
 		temp = temp->next;
 	}
@@ -81,20 +86,20 @@ extern int createRCB(int fd, FILE* fh, int sz, char* type){
 		rcb.fileDescriptor = fd;
 		rcb.fileHandle = fh;
 		rcb.lengthRemaining = sz;
-		if (strcmp(type, "SJF") == 0){
-			rcb.quantum = sz; 
-		}
-		else if (strcmp(type, "RR") == 0) {
-			rcb.quantum = MAX_HTTP_SIZE;
-		}
 
 		/* Add RCB to queue */		
 		if(strcmp(type, "SJF") == 0){	/*slot rcb into queue in SJF order */
+			rcb.quantum = sz;
 			addRcbSjf(&rcb);
 		}
-		else if (strcmp(type, "RR") == 0){
-			addRcbRr(&rcb);
-		}		
+		/* RR and MLFB handle new RCBs the same way */
+		else if ((strcmp(type, "RR") == 0) || (strcmp(type, "MLFB") == 0)){
+			rcb.quantum = EIGHT_KB;
+			addRcbToEnd(&rcb, firstRcb);
+		}
+		else {
+			perror("Invalid scheduler type");
+		}
 		
 		queueSize++;
 		return 1;
@@ -121,15 +126,31 @@ extern struct RequestControlBlock* getNextJob(char* type){
 	struct RequestControlBlock* rcb;
 	/* SJF and RR only have one queue and the next job is at the front */
 	if ((strcmp(type, "SJF") == 0) || (strcmp(type, "RR") == 0)){
-		rcb = firstRCB;	/* Get the first job in the queue */
+		rcb = firstRcb;	/* Get the first job in the queue */
 		if (rcb != NULL) {		
-			firstRCB = rcb->next; 			/*Remove job from queue */
+			firstRcb = rcb->next; 			/*Remove job from queue */
 		}	
 	}
 	
 	/* MLFB has to consider the possibility that the next job is in a different queue */	
 	else if (strcmp(type, "MLFB") == 0){
-	
+		rcb = NULL;
+		if (firstRcb != NULL) {			/* Try high priority queue first */
+			rcb = firstRcb;			
+			firstRcb = rcb->next;
+		}
+		else if (firstRcb64 != NULL) {		/* Move to medium priority queue */
+			rcb = firstRcb64;
+			firstRcb64 = rcb->next;
+		}
+		else if (firstRcbRr != NULL) {		/* Move to low priority queue */
+			rcb = firstRcbRr;
+			firstRcbRr = rcb->next;
+		}
+	}
+
+	else {
+		perror("Invalid scheduler type");
 	}
 
 	return rcb; 
@@ -149,9 +170,20 @@ extern void updateRCB(char* type, int len, struct RequestControlBlock* rcb){
 		printf("Something went wrong processing %d with SJF.", rcb->sequenceNumber);
 	}
 	else if (strcmp(type, "RR") == 0){
-		/* Update length and return to the end of the queue */
-		rcb->lengthRemaining -= len;
-		addRcbRr(rcb);
+		/* Rturn to the end of the queue */
+		addRcbToEnd(rcb, firstRcb);
+	}
+	else if (strcmp(type, "MLFB") == 0){
+		if (rcb->quantum == EIGHT_KB) { 	/* Demote to medium priority queue */
+			rcb->quantum = SIXTY_FOUR_KB;
+			addRcbToEnd(rcb, firstRcb64);			
+		}
+		else {				/* Put in low priority queue */
+			addRcbToEnd(rcb, firstRcbRr);
+		}
+	}
+	else {
+		perror("Invalid scheduler type");
 	}
 }
 
