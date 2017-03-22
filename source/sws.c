@@ -167,8 +167,8 @@ int main( int argc, char **argv ) {
 	
 	return 0;
   }
-  if(strcmp(schedType, "SJF") != 0){
-    printf( "usage: schedule type must be SJF, or else 'test' for testing\n" );
+  if((strcmp(schedType, "SJF") != 0) && (strcmp(schedType, "RR") != 0)){
+    printf( "usage: schedule type must be SJF, RR, or else 'test' for testing\n" );
     return 0;
   }   
 

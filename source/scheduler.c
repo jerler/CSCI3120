@@ -27,47 +27,73 @@ extern void initializeQueue(){
 	}
 } */
 
+void addRcbSjf(struct RequestControlBlock *rcb){
+	if (firstRCB == NULL) {
+		rcb->next = NULL;
+		firstRCB = rcb;
+		return;
+	}	
+	struct RequestControlBlock *prev;			
+	prev = NULL;
+	rcb->next = firstRCB;
+	while((rcb->next != NULL)){
+		if (rcb->next->lengthRemaining > rcb->lengthRemaining){
+			if (prev == NULL){	/* add rcb to the front of the list */
+				firstRCB = rcb;						
+			}
+			else {
+				prev->next = rcb;
+			}
+			break;
+		}
+		else {			/* move to the next item in the list */
+			prev = rcb->next;
+			rcb->next = rcb->next->next;
+		}				
+	}
+	if (rcb->next == NULL){		/* add rcb to the end of the list */
+		prev->next = rcb;
+	}
+}
+
+void addRcbRr(struct RequestControlBlock *rcb){
+	if (firstRCB == NULL) {
+		rcb->next = NULL;
+		firstRCB = rcb;
+		return;
+	}
+
+	struct RequestControlBlock *temp = firstRCB;
+	/* Go through the queue to find the end 
+	 * NOTE: We assume that the queue is non-empty. */
+	while(temp->next != NULL){
+		temp = temp->next;
+	}
+	temp->next = rcb;
+	rcb->next = NULL;
+}
+
 extern int createRCB(int fd, FILE* fh, int sz, char* type){
 
 	if (queueSize <= RCB_QUEUE_SIZE) {
-		struct RequestControlBlock *rcb;
-		rcb->sequenceNumber = globalSequence++;
-		rcb->fileDescriptor = fd;
-		rcb->fileHandle = fh;
-		rcb->lengthRemaining = sz;
+		struct RequestControlBlock rcb;
+		rcb.sequenceNumber = globalSequence++;
+		rcb.fileDescriptor = fd;
+		rcb.fileHandle = fh;
+		rcb.lengthRemaining = sz;
 		if (strcmp(type, "SJF") == 0){
-			rcb->quantum = sz; 
+			rcb.quantum = sz; 
 		}
 		else if (strcmp(type, "RR") == 0) {
-			rcb->quantum = MAX_HTTP_SIZE;
+			rcb.quantum = MAX_HTTP_SIZE;
 		}
-		//queue[index] = rcb; 			//add rcb to queue
-		if (firstRCB == NULL) {
-			rcb->next = NULL;
-			firstRCB = rcb;
+
+		/* Add RCB to queue */		
+		if(strcmp(type, "SJF") == 0){	/*slot rcb into queue in SJF order */
+			addRcbSjf(&rcb);
 		}
-		else if(strcmp(type, "SJF") == 0){	/*slot rcb into queue in SJF order */
-			struct RequestControlBlock *prev;			
-			prev = NULL;
-			rcb->next = firstRCB;
-			while((rcb->next != NULL)){
-				if (rcb->next->lengthRemaining > rcb->lengthRemaining){
-					if (prev == NULL){	/* add rcb to the front of the list */
-						firstRCB = rcb;						
-					}
-					else {
-						prev->next = rcb;
-					}
-					break;
-				}
-				else {			/* move to the next item in the list */
-					prev = rcb->next;
-					rcb->next = rcb->next->next;
-				}				
-			}
-			if (rcb->next == NULL){		/* add rcb to the end of the list */
-				prev->next = rcb;
-			}
+		else if (strcmp(type, "RR") == 0){
+			addRcbRr(&rcb);
 		}		
 		
 		queueSize++;
@@ -111,19 +137,25 @@ extern struct RequestControlBlock* getNextJob(char* type){
 
 extern void updateRCB(char* type, int len, struct RequestControlBlock* rcb){
 	rcb->lengthRemaining -= len;
-	if (strcmp(type,"SJF") == 0){
-		if (rcb->lengthRemaining <= 0){
-			printf("Request %d completed", rcb->sequenceNumber);
-			fclose(rcb->fileHandle);
-			close(rcb->fileDescriptor);			
-			removeRCB(rcb);
-		}
-		else {
-			printf("Something went wrong processing %d with SJF.", rcb->sequenceNumber);
-		}
+	/* Regardless of scheduler type, and finished job is handled the same way */	
+	if (rcb->lengthRemaining <= 0){
+		printf("Request %d completed", rcb->sequenceNumber);
+		fclose(rcb->fileHandle);
+		close(rcb->fileDescriptor);			
+		removeRCB(rcb);
 	}
-
+	else if (strcmp(type,"SJF") == 0){
+		/* All jobs should complete in one pass for SJF */
+		printf("Something went wrong processing %d with SJF.", rcb->sequenceNumber);
+	}
+	else if (strcmp(type, "RR") == 0){
+		/* Update length and return to the end of the queue */
+		rcb->lengthRemaining -= len;
+		addRcbRr(rcb);
+	}
 }
+
+
 
 
 
