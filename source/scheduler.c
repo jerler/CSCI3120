@@ -7,16 +7,13 @@
 #include "scheduler.h"
 
 
-
-
-
-/*Sequence numbers: 
- * empty spots have a sequenceNumber of -1 */
 int globalSequence = 0;			  		/* sequence number of next RCB */
-struct RequestControlBlock queue[RCB_QUEUE_SIZE];	/* holds all RCBs for the scheduler */
+//struct RequestControlBlock queue[RCB_QUEUE_SIZE];	/* holds all RCBs for the scheduler */
+struct RequestControlBlock *firstRCB = NULL;		/* pointer to the first RCB in the queue */
+int queueSize = 0;					/* number of RCBs in queue */
 
 /*for testing only*/
-extern void displayQueue(int n){
+/*extern void displayQueue(int n){
 	int i;
 	for(i = 0; i < n; i++){
 		printf("%d: %d\n", i, queue[i].sequenceNumber);
@@ -28,81 +25,88 @@ extern void initializeQueue(){
 	for(i = 0; i < RCB_QUEUE_SIZE; i++){
 		queue[i].sequenceNumber = -1;
 	}
-}
+} */
 
 extern int createRCB(int fd, FILE* fh, int sz, char* type){
-	struct RequestControlBlock rcb;
-	int index;
-	for (index = 0; index < RCB_QUEUE_SIZE; index++){
-		if(queue[index].sequenceNumber == -1){
-			break;				//we have found the first free spot
-		}
-	}
-	if (index < RCB_QUEUE_SIZE) {
-		rcb.sequenceNumber = globalSequence++;
-		rcb.fileDescriptor = fd;
-		rcb.fileHandle = fh;
-		rcb.lengthRemaining = sz;
+
+	if (queueSize <= RCB_QUEUE_SIZE) {
+		struct RequestControlBlock *rcb;
+		rcb->sequenceNumber = globalSequence++;
+		rcb->fileDescriptor = fd;
+		rcb->fileHandle = fh;
+		rcb->lengthRemaining = sz;
 		if (strcmp(type, "SJF") == 0){
-			rcb.quantum = sz; 
+			rcb->quantum = sz; 
 		}
-		rcb.lock = 0;
-		queue[index] = rcb; 			//add rcb to queue
+		else if (strcmp(type, "RR") == 0) {
+			rcb->quantum = MAX_HTTP_SIZE;
+		}
+		//queue[index] = rcb; 			//add rcb to queue
+		if (firstRCB == NULL) {
+			rcb->next = NULL;
+			firstRCB = rcb;
+		}
+		else if(strcmp(type, "SJF") == 0){	/*slot rcb into queue in SJF order */
+			struct RequestControlBlock *prev;			
+			prev = NULL;
+			rcb->next = firstRCB;
+			while((rcb->next != NULL)){
+				if (rcb->next->lengthRemaining > rcb->lengthRemaining){
+					if (prev == NULL){	/* add rcb to the front of the list */
+						firstRCB = rcb;						
+					}
+					else {
+						prev->next = rcb;
+					}
+					break;
+				}
+				else {			/* move to the next item in the list */
+					prev = rcb->next;
+					rcb->next = rcb->next->next;
+				}				
+			}
+			if (rcb->next == NULL){		/* add rcb to the end of the list */
+				prev->next = rcb;
+			}
+		}		
+		
+		queueSize++;
 		return 1;
 	}
 	return 0;					//queue was full
 }
 
-void removeRCB(int sequenceNumber){
-	int index = -1;
-	int i;
-	/*Find rcb*/
-	for (i = 0; i < RCB_QUEUE_SIZE; i++){
-		if(queue[i].sequenceNumber == sequenceNumber){
-			index = i;
-			break;
-		}
-	}
-	if (index == -1) {
+void removeRCB(struct RequestControlBlock *rcb){
+	if (rcb == NULL) {
 		perror("Tried to remove rcb but it doesn't exist.");
 		return;
 	}
-	queue[index].sequenceNumber = -1;
-	queue[index].fileDescriptor = -1;
-	queue[index].fileHandle = NULL;
-	queue[index].lengthRemaining = 0;
-	queue[index].quantum = 0;
-	queue[index].lock = 0;
+	else {
+		queueSize--;
+		free(rcb);
+	}
 }
 
+/* Note that we do not want to update queue size here. We need
+ * to ensure that there is space for the job to rejoin the queue
+ * if it does not complete. 
+ */ 
 extern struct RequestControlBlock* getNextJob(char* type){
 	struct RequestControlBlock* rcb;
-	if(strcmp(type, "SJF") == 0){
-		/*Get the shortest job*/
-		int i, sz;
-		int index = -1;
-
-		for (i = 0; i < RCB_QUEUE_SIZE; i++){
-			if ((queue[i].sequenceNumber > -1) && (queue[i].lock == 0)){
-				if((index == -1) || (queue[i].lengthRemaining < sz)){
-					index = i;
-					sz = queue[i].lengthRemaining;
-				}
-			}
-		}
-		if (index == -1) {	//no more jobs available!
-			struct RequestControlBlock empty;
-			empty.sequenceNumber = -1;
-			rcb = &empty;
-		}
-		else {
-			queue[index].lock = 1; 	/*lock rcb so it cannot be grabbed by another thread*/
-			rcb = &queue[index];
+	/* SJF and RR only have one queue and the next job is at the front */
+	if ((strcmp(type, "SJF") == 0) || (strcmp(type, "RR") == 0)){
+		rcb = firstRCB;	/* Get the first job in the queue */
+		if (rcb != NULL) {		
+			firstRCB = rcb->next; 			/*Remove job from queue */
 		}	
-	
-
 	}
-	return rcb;
+	
+	/* MLFB has to consider the possibility that the next job is in a different queue */	
+	else if (strcmp(type, "MLFB") == 0){
+	
+	}
+
+	return rcb; 
 }
 
 extern void updateRCB(char* type, int len, struct RequestControlBlock* rcb){
@@ -112,16 +116,15 @@ extern void updateRCB(char* type, int len, struct RequestControlBlock* rcb){
 			printf("Request %d completed", rcb->sequenceNumber);
 			fclose(rcb->fileHandle);
 			close(rcb->fileDescriptor);			
-			removeRCB(rcb->sequenceNumber);
+			removeRCB(rcb);
 		}
 		else {
-			rcb->lock = 0; 	/*Unlock file*/
 			printf("Something went wrong processing %d with SJF.", rcb->sequenceNumber);
 		}
-
 	}
 
 }
+
 
 
 

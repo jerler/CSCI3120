@@ -2,19 +2,13 @@
 #define SCHEDULER_H
 
 #include <stdio.h>
+#include "rcb.h"
 
 
-#define RCB_QUEUE_SIZE 64		/* max number of request control blocks in queue */
-#define MAX_HTTP_SIZE 8192              /* size of buffer to allocate */
+#define RCB_QUEUE_SIZE 	64
+#define MAX_HTTP_SIZE 	8192              /* size of buffer to allocate and the RR quantum */
 
-struct RequestControlBlock {
-	int sequenceNumber;
-	int fileDescriptor;
-	FILE* fileHandle;
-	int lengthRemaining;
-	int quantum;
-	int lock;		/*set to 1 if being processed, 0 otherwise*/
-}; 
+
 
 extern int globalSequence;		/* The sequence number given to the next RCB */
 
@@ -37,7 +31,7 @@ extern int createRCB(int fd, FILE* fh, int sz, char* type);
 
 /* This function resets an RCB to default values to make it available
  */ 
-void removeRCB(int index);
+void removeRCB(struct RequestControlBlock *rcb);
 
 /* This function will grab the next RCB (based on the scheduling type
  * input parameter).

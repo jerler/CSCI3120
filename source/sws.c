@@ -15,6 +15,7 @@
 
 #include "network.h"
 #include "scheduler.h"
+#include "rcb.h"
 
 
 
@@ -163,9 +164,7 @@ int main( int argc, char **argv ) {
  
   /*for testing*/
   if(strcmp(schedType, "test") == 0){
-	initializeQueue();
-	removeRCB(7);
-	displayQueue(10);	
+	
 	return 0;
   }
   if(strcmp(schedType, "SJF") != 0){
