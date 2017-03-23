@@ -15,6 +15,7 @@
 
 #include "network.h"
 #include "scheduler.h"
+#include "rcb.h"
 
 
 
@@ -163,13 +164,11 @@ int main( int argc, char **argv ) {
  
   /*for testing*/
   if(strcmp(schedType, "test") == 0){
-	initializeQueue();
-	removeRCB(7);
-	displayQueue(10);	
+	
 	return 0;
   }
-  if(strcmp(schedType, "SJF") != 0){
-    printf( "usage: schedule type must be SJF, or else 'test' for testing\n" );
+  if((strcmp(schedType, "SJF") != 0) && (strcmp(schedType, "RR") != 0) && (strcmp(schedType, "MLFB") != 0)){
+    printf( "usage: schedule type must be SJF, RR, MLFB or else 'test' for testing\n" );
     return 0;
   }   
 
