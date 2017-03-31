@@ -62,17 +62,18 @@ static void serve_client( int fd ) {
   if( tmp && !strcmp( "GET", tmp ) ) {
     req = strtok_r( NULL, " ", &brk );
   }
- 
+
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
     write( fd, buffer, len );                       /* if not, send err */
   } else {                                          /* if so, open file */
     req++;                                          /* skip leading / */
     fin = fopen( req, "r" );                        /* open file */
+
     if( !fin ) {                                    /* check if successful */
       len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );  
       write( fd, buffer, len );                     /* if not, send err */
-      fclose( fin);
+//      fclose( fin);
     }
     else {                                        /* if so, add file to queue */
     /* Determine size of file
@@ -90,7 +91,6 @@ static void serve_client( int fd ) {
 
     }
   }
-
 }
 
 static int processNextJob(){
@@ -153,6 +153,7 @@ int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
 
+
   /* check for and process parameters 
    * port number and scheduler
    */
@@ -160,8 +161,9 @@ int main( int argc, char **argv ) {
     printf( "usage: sms <port> <scheduler>\n" );
     return 0;
   }
+
   schedType = argv[2];
- 
+
   /*for testing*/
   if(strcmp(schedType, "test") == 0){
 	
@@ -172,6 +174,7 @@ int main( int argc, char **argv ) {
     return 0;
   }   
 
+
   network_init( port );                             /* init network module */
 
   for( ;; ) {                                       /* main loop */
@@ -179,8 +182,11 @@ int main( int argc, char **argv ) {
 
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
       serve_client( fd );                           /* process each client */
+	return 0;
     }
     while(processNextJob());			    /* process the rcbs in the queue */
     
   }
+	return 0;
+
 }
