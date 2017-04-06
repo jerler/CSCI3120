@@ -1,40 +1,16 @@
-/*
- * cache.c
- *
- *  Created on: Mar 21, 2017
- *      Author: Julie Morrissey - B00592466
- */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>
+#include "list.h"
 #include <sys/stat.h> //for inode
-#include <sys/sendfile.h> //SYSTEM DEPENDENT - USE LINUX
-
-/*
- * Basic design: We have vectors (assigned using calloc) of size 1 to start for clients (struct cfd_mgr has vector of struct cfds), files that were opened but
- * not cached (struct files_not_cached_mgr has vector of struct files_not_cached), and later (to be implmeneted) for files that were copied into the cache
- * 
- * Whenever we run out of space in any of those vectors, we reallocate the stored information into a new vector that has doubled in size. In the case of the file
- * vectors, we need to copy their pointer information before reallocating so we can set the pointers from the cfds back up after reallocation. For cfd and files not
- * in the cache, this process will continue unbounded. For the cache, there needs to be a max cut-off point (i.e. a full cache) at which point the file either needs 
- * to take the place of an unused, old file in the cache, or be opened from disk (the part I have already implemented). No vectors will ever shrink.
- * 
- * There are versions of cache_send, cache_filesize, and cache_close that are specific to whether the file has been saved in the cache or
- * if it has been opened from disk. The user does not need to worry about that however and only of course needs to call one of the above mentioned methods and this 
- * deciding is all handled within this program (using the three pointers in our typedef). Similarly, whoever writes the cache part of the code need only to copy the 
- * methods I've made (ex: filesize_v_not_cached (v for version)) for the cache-specific methods since all the deciding about what type of file it is has already been
- * written and successfully compiled in my cache_open method. (though make sure you notice what states are updated in these lower level methods and mirror them in yours!)
- * 
- * For the most part I haven't delved into the cache-specific architecture but I have created cache_pages which is a struct that's used for every file copied into the cache
- * and contains information such as how many people (cfds) are currently using the file, a pointer to where the data has been copied, etc., as well as a files_cached struct
- * to mirror my files_not_cached struct, which contains information just about where the cfd user is currently pointing to in the cached memory (so one of these structs is
- * made per cfd and is used as an intermediary between the cfd and the cache)
- * 
- * I'm not sure if all of the empty structs down below will end up being used but I've temporarily left their skeletons if for no other reason than for you to orient
- * yourself with my logic. :-) 
- */
-
+// This is just so that I can compile on OSX and it doesn't have sendfile.
+// THE MAKEFILE MUST HAVE -DHAS_SENDFILE TO WORK!!!
+#ifdef HAS_SENDFILE
+	#include <sys/sendfile.h> //SYSTEM DEPENDENT - USE LINUX
+#endif
 
 
 
@@ -68,19 +44,19 @@ struct client_mgr {
 };
 
 
-// One of these for every entry in the cache - not yet initialized!
+// One of these for every entry in the cache
 struct cache_page {
 	ino_t inode;          // The unique identifier of the file (My understanding that inodes identify files even if not in same path)
 	int ref_count;        // How many people are currently using the file (for garbage collection)
 	int file_size;
 	time_t last_use;      // The last time anyone called close on the file - will be used to determine last use & hence priority in the cache when space is needed
-	void* data;           // Points to the memory that holds the contents of the file
+	char* data;           // Points to the memory that holds the contents of the file
 };
 
 
 //One of these for every client - will point to a cache page. Keeps track of where the client is in the file
 struct file_cached {
-  int position;                   // How many bytes have we written so far
+	int position;                   // How many bytes have we written so far
 	struct cache_page* cache_page;  // The pointer to the cache page the cfd has open
 };
 
@@ -89,44 +65,30 @@ struct file_cached {
 struct file_not_cached {
 	FILE *open_ptr; // Keeps track of where they're reading in the file and when we reach the file end
 	int file_size;
-	int taken;      // Boolean; if this space is taken by an open, not cached file
 };
 
-
-// Holds the vector of files open but not in the cache
-struct not_cached_mgr {
-	int size;
-	struct file_not_cached* files_not_cached;
-};
-
-
-// Holds the vector of cache pages
-struct cache_page_mgr {
-
-};
-
-
-// Holds the vector of the actual files that have been opened and copied into the cache (at least I'm pretty sure that was the thought process)
-struct cached_mgr { 
-
-};
 
 
 // The manager of everything - our cache
 struct cache {
 	pthread_mutex_t cache_mu;               
-	struct not_cached_mgr not_cached_mgr;
 	struct client_mgr client_mgr;
-//	struct cache_page_mgr;
-//	struct cached_mgr;
-	int size;
-	int bytes_used;
+	struct link_list* cache_page_list;
+	struct link_list* not_cached_list;
+	struct link_list* cached_list;
+	int max_bytes_size;
 };
 
-
+// This will only be used for the list that contains cache_pages (aka cache_page_list)
+// Needs the extra step to free the memory it references
+static void page_dtor(void* p)
+{
+	struct cache_page* page = p;
+	free(page->data);
+	free(page);
+}
 
 /* Set up */
-
 
 static struct cache cache;
 
@@ -134,22 +96,26 @@ static struct cache cache;
 void cache_init(int size) //Maybe should return a number
 {
   pthread_mutex_init(&cache.cache_mu,NULL);
-  cache.size = size; // starting cache size
-  cache.bytes_used = 0;
+  cache.max_bytes_size = size; // starting cache size
   
   cache.client_mgr.client_size = 1; // 1 item in the list of clients to start
   cache.client_mgr.clients = calloc(sizeof(struct cfd),cache.client_mgr.client_size); //allocate's memory for 1 client and sets all values to 0
   
-  cache.not_cached_mgr.size = 1; // 1 item in the list of not cached files to start
-  cache.not_cached_mgr.files_not_cached = calloc(sizeof(struct file_not_cached),cache.not_cached_mgr.size); //allocate's memory for 1 file (not cached) and sets all values to 0
-  
-  //TODO: cache.cached_mgr...
+  cache.not_cached_list=link_list_init(free); //so when you want to get rid of a node / the whole linked list it'll just free the memory
+  cache.cached_list=link_list_init(free);
+  cache.cache_page_list=link_list_init(page_dtor);
 }
 
 
 
 /* LOWEST LEVEL METHODS */
 
+
+static int filesize_v_cached(struct cfd* client)
+{
+	struct file_cached* p = (struct file_cached*) client->interface;
+	return p->cache_page->file_size;
+}
 
 // Define a filesize for a version of a file that's not cached
 static int filesize_v_not_cached(struct cfd* client)
@@ -159,21 +125,61 @@ static int filesize_v_not_cached(struct cfd* client)
 }
 
 
+static int send_v_cached(struct cfd* client, int client_fd, int n_bytes)
+{
+	struct file_cached* p = (struct file_cached*) client->interface;
+	char* src = p->cache_page->data + p->position;
+	int actually_written;
+	const int bytes_left = p->cache_page->file_size - p->position;
+	if( bytes_left < n_bytes ) {
+		n_bytes = bytes_left;
+	}
+	pthread_mutex_unlock( &cache.cache_mu );
+	actually_written = write( client_fd, src, n_bytes );
+	pthread_mutex_lock( &cache.cache_mu );
+	
+	if( -1 == actually_written ) {
+		return -1;
+	}
+
+	p->position += actually_written;
+	return actually_written;
+
+}
+
 static int send_v_not_cached(struct cfd* client, int client_fd, int n_bytes)
 {
 	//Unlocked for performance but there's no danger here - mix of local variables and variables owned by the one thread
 	struct file_not_cached* p = (struct file_not_cached*) client->interface; //up to the caller to know how many bytes is left in the file
 	int our_fd = fileno(p->open_ptr); //Converts a FILE* into a file descriptor which we then pass to sendfile
 	if(our_fd == -1) return -1;
-  // Unlock so that other threads can send in parallel
-  pthread_mutex_unlock( &cache.cache_mu );
+	int ret = -1; // This is to catch the HAS_SENDFILE case below
+	// Unlock so that other threads can send in parallel
+	pthread_mutex_unlock( &cache.cache_mu );
 	// Instead of calling write() which would require a bunch of extra steps, we're using sendfile()
-	int ret = sendfile(client_fd,our_fd,NULL,n_bytes); //This reads n bytes from one file descriptor (our_fd) into the other (client_fd)
-  // Re-lock before returning otherwise the unlock higher up won't make sense
-  pthread_mutex_lock( &cache.cache_mu );
-  return ret;
+	#ifdef HAS_SENDFILE
+		ret = sendfile(client_fd,our_fd,NULL,n_bytes); //This reads n bytes from one file descriptor (our_fd) into the other (client_fd)
+	#endif
+	// Re-lock before returning otherwise the unlock higher up won't make sense
+	pthread_mutex_lock( &cache.cache_mu );
+	return ret;
 }
 
+
+static int close_v_cached(struct cfd* client)
+{
+    struct file_cached* p = (struct file_cached*) client-> interface;
+
+	//Reset state
+	client->taken=0;
+
+	//Decrement refcount, and update last time used
+	p->cache_page->ref_count--;
+	p->cache_page->last_use = time( NULL );
+
+	link_list_remove(cache.cached_list,p);
+	return 0;
+}
 
 static int close_v_not_cached(struct cfd* client)
 {
@@ -182,9 +188,66 @@ static int close_v_not_cached(struct cfd* client)
 
 	//Reset state
 	client->taken=0;
-	p->taken=0;
+	link_list_remove(cache.not_cached_list,p);
 
 	return 0;
+}
+
+static int load_page(char* file, int file_size, struct cache_page* page)
+{
+	struct stat stat;
+	FILE* f = fopen(file,"rb");
+	if(!f) return 0;
+	page->file_size=file_size;
+	page->data = malloc(file_size);
+	if(!page->data)
+	{
+		fclose(f);
+		return 0;
+	}
+
+	if(fread(page->data,file_size,1,f) != 1)
+	{
+		free(page->data);
+		page->data=NULL;
+		fclose(f);
+		return 0;
+	}
+	if(fstat(fileno(f),&stat)!=0)
+	{
+		free(page->data);
+		page->data=NULL;
+		fclose(f);
+		return 0;
+	}
+	page->inode=stat.st_ino;
+	fclose(f);
+	page->last_use=0;
+	page->ref_count=1;
+
+	printf("File of size %d cached.\n",file_size);
+	return 1;
+}
+
+
+static struct cache_page* add_to_cache(char* file,int file_size)
+{
+	struct cache_page* temp = calloc(sizeof(struct cache_page),1);
+	if(!temp) return NULL;
+
+	if(!link_list_add_front(cache.cache_page_list,temp))
+	{
+		free(temp);
+		return NULL;
+	}
+
+	if(!load_page(file,file_size,temp))
+	{
+		link_list_remove(cache.cache_page_list,temp);
+		return NULL;
+	}
+
+	return temp;
 }
 
 
@@ -194,7 +257,6 @@ static int setup_not_cached_file(struct cfd* cfd,char *file, int file_size,struc
 	if(!f) return -1;
 	fnc->open_ptr = f;
 	fnc->file_size=file_size;
-	fnc->taken=1;
 
 	cfd->interface=fnc; //points to the "file"
 	cfd->filesize_ptr=filesize_v_not_cached; //so when file_size function is called, it will go to the version designed for not cached files
@@ -206,115 +268,187 @@ static int setup_not_cached_file(struct cfd* cfd,char *file, int file_size,struc
 	return cfd->id;
 }
 
+static int setup_cached_file(struct cfd* cfd, char *file, int file_size, struct file_cached* fc)
+{
+	fc->cache_page = add_to_cache(file,file_size);
+	if(!fc->cache_page) return -1;
+
+	fc->position = 0;
+
+	cfd->interface=fc; //points to the "file"
+	cfd->filesize_ptr=filesize_v_cached; //so when file_size function is called, it will go to the version designed for not cached files
+	cfd->taken=1;
+
+	cfd->send_ptr=send_v_cached; //not cached version of send
+
+	cfd->close_ptr=close_v_cached; //not cached version of close
+
+	return cfd->id;
+}
+
 
 static int open_not_cached(struct cfd* cfd, char *file,int file_size)
 {
-	struct file_not_cached* curr = cache.not_cached_mgr.files_not_cached; //This will never be null
-	struct file_not_cached* end = curr+cache.not_cached_mgr.size; //will be one past the end
-	while (curr != end)
-	{
-		if (!(curr->taken))
-		{
-			return setup_not_cached_file(cfd,file,file_size,curr); //return -1 if unsuccessful
-		}
-		curr++;
-	}
-	// make a temp list of ints to remember what cfd points to us
-	struct cfd** scratch = malloc( sizeof( struct cfd* ) * cache.not_cached_mgr.size );
-	// populate scratch with a temp list of the file_not_cached positions.
-	{
-		int i = 0;
-		struct file_not_cached* tmp = cache.not_cached_mgr.files_not_cached;
-		struct cfd** scratch_curr = scratch;
-		for( i = 0; i < cache.not_cached_mgr.size; i++ )
-		{
-			struct cfd* search_cfd = cache.client_mgr.clients;
-			int count = cache.client_mgr.client_size;
-			while( count-- )
-			{
-				if( search_cfd->interface == tmp )
-				{
-					*scratch_curr = search_cfd;
-					++scratch_curr;
-					break;
-				}
-				search_cfd++;
-			}
-			if( 0 == count )
-			{
-				/* If we can't find it, something is horribly wrong */
-				free( scratch );
-				return -1;
-			}
-			tmp++;
-		}
-	}
+	struct file_not_cached* temp = calloc(sizeof(struct file_not_cached),1); //get memory needed to add file
+	if(!temp) return -1;
 
-	//Didn't find one - make the list bigger
-	//In real world, there would of course be a finite number of clients being handled, however for simplicity we'll let this list grow unbounded.
-	struct file_not_cached* new_memory = realloc(cache.not_cached_mgr.files_not_cached,(sizeof(struct file_not_cached)*cache.not_cached_mgr.size)*2); //allocate's memory for 1 file
-	if (new_memory == cache.not_cached_mgr.files_not_cached)
+	if(!link_list_add_front(cache.not_cached_list,temp))
 	{
-		// free the scratch before returning
-		free( scratch );
-		printf("Failure to reallocate not-cached list");
+		free(temp);
 		return -1;
 	}
-	cache.not_cached_mgr.files_not_cached = new_memory;
 
-	// using scratch created above, re populate the cfd->interface of all affected cfds
-	{
-		struct cfd** c = scratch;
-		struct file_not_cached* f = cache.not_cached_mgr.files_not_cached;
-		int i = 0;
-		for( i = 0; i < cache.not_cached_mgr.size; i++ )
-		{
-			(*c)->interface = f;
-			f++;
-			c++;
-		}
-	}
-	// free the temp buffer
-	free( scratch );
- 
-	// only after we have manipulated the list will we update size
-	cache.not_cached_mgr.size*=2;
-
-	curr = cache.not_cached_mgr.files_not_cached+cache.not_cached_mgr.size/2;
-	memset(curr,0,(cache.not_cached_mgr.size/2)*sizeof(struct file_not_cached));
-	return setup_not_cached_file(cfd,file,file_size,curr); //return -1 if unsuccessful
+	return setup_not_cached_file(cfd,file,file_size,temp); //return -1 if unsuccessful
 }
 
 static int open_cached(struct cfd* cfd, char *file,int file_size)
 {
-	//TODO: this.
-	return -1;
+
+	struct file_cached* temp = calloc(sizeof(struct file_cached),1);
+	if (!temp) return -1;
+
+	if(!link_list_add_front(cache.cached_list,temp))
+	{
+		free(temp);
+		return -1;
+	}
+
+	int cfd_id = setup_cached_file(cfd,file,file_size,temp);
+	if (cfd_id == -1)
+	{
+		link_list_remove(cache.cached_list,temp);
+		return -1;
+	}
+	return cfd_id;
 }
 
-//TODO: static int filesize_v_cached(struct cfd* client), static int send_v_cached, static int close_v_cached, static int setup_cached_file...
 
-static struct file_cached* find_in_cache(char* file)
+static unsigned int find_by_inode( void* context, void* item ) //to pass to our link_list_find method to let it know when it has found what it's looking for
 {
-	//Look through cache for matching inode (i.e. file is already open in cache)
-	//Return a pointer to the file_cached
-	//TODO: This
-	return NULL;
+	ino_t* looking_for = context;
+	struct cache_page* page = item;
+
+	return *looking_for == page->inode;
 }
 
-static int join(struct cfd* cfd, struct file_cached* fc)
+static struct cache_page* find_in_cache(char* file)
+{
+	struct stat s;
+	if(-1 == stat(file,&s)) return NULL;
+
+	ino_t id = s.st_ino;
+	return link_list_find(cache.cache_page_list,find_by_inode,&id); //Will keep calling find_by_inode until it finds what it's looking for or reach end (return NULL)
+
+}
+
+static int join(struct cfd* cfd, struct cache_page* cp)
 {
 	//Link the cfd to the file that's already cached using fc
 	//Return the id of the cfd, or -1 if error
-	//TODO: This
-	return -1;
+	struct file_cached* temp = calloc(sizeof(struct file_cached),1);
+	if(!temp) return -1;
+
+	if(!link_list_add_front(cache.cached_list,temp))
+	{
+		free(temp);
+		return -1;
+	}
+
+	temp->position=0; //redundant but explicit
+	temp->cache_page = cp;
+	cp->ref_count++;
+	cfd->close_ptr = close_v_cached;
+	cfd->filesize_ptr = filesize_v_cached;
+	cfd->send_ptr = send_v_cached;
+	cfd->interface = temp;
+	cfd->taken=1;
+
+	return cfd->id;
 }
 
-static int check_for_room(int file_size)
+static void count_bytes( void* context, void* item )
 {
-	//Check for room for file_size bytes in cache - if no room, check for old files in cache that are not currently in use and if you find those, pop them out and return 1 saying there is now room
-	// Else 0 if there's no room and you cannot make room
-	//TODO: This
-	return 0;
+	int* counter = context;
+	struct cache_page* cp = item;
+
+	*counter+=cp->file_size;
+}
+
+static void count_freeable( void* context, void* item )
+{
+	int* counter = context;
+	struct cache_page* cp = item;
+
+	if(!cp->ref_count)
+	{
+		*counter+=cp->file_size;
+	}
+}
+
+static unsigned int find_first_freeable( void* context, void* item )
+{
+	struct cache_page* cp = item;
+
+	return cp->ref_count==0;
+}
+
+static void calc_oldest_time( void* context, void* item )
+{
+	time_t* oldest = context;
+	struct cache_page* cp = item;
+
+	if (cp->last_use < *oldest) *oldest=cp->last_use;
+}
+
+static unsigned int find_oldest_page( void* context, void* item)
+{
+	time_t* oldest = context;
+	struct cache_page* cp = item;
+
+	return cp->last_use==*oldest;
+}
+
+
+//Check for room for file_size bytes in cache
+//if no room, check for old files in cache that are not currently in use and if you find those, pop them out and return 1 saying there is now room
+// Else 0 if there's no room and you cannot make room
+static int try_make_room(int file_size)
+{
+	int bytes_used = 0;
+	link_list_foreach(cache.cache_page_list,count_bytes,&bytes_used); //stores bytes used into "bytes used"
+
+	int bytes_free = cache.max_bytes_size-bytes_used;
+	if(file_size<=bytes_free) return 1;
+
+	int bytes_freeable = 0;
+	link_list_foreach(cache.cache_page_list,count_freeable,&bytes_freeable);
+	if((bytes_free+bytes_freeable)<file_size) return 0;
+
+	while(1)
+	{
+
+		//find the time of any unused page
+		struct cache_page* cp = link_list_find(cache.cache_page_list,find_first_freeable,NULL);
+		time_t first_time = cp->last_use;
+
+		time_t oldest_time = first_time;
+		//find the time of the oldest unused page
+		link_list_foreach(cache.cache_page_list,calc_oldest_time,&oldest_time);
+
+		//find the oldest unused page
+		cp = link_list_find(cache.cache_page_list,find_oldest_page,&oldest_time);
+
+		//remove that page
+		link_list_remove(cache.cache_page_list,cp);
+		printf("File of size %d evicted\n",cp->file_size);
+
+		//Now is there enough room?
+		bytes_used = 0;
+		link_list_foreach(cache.cache_page_list,count_bytes,&bytes_used); //stores bytes used into "bytes used"
+		bytes_free = cache.max_bytes_size-bytes_used;
+		if(file_size<=bytes_free) break;
+	}
+	return 1;
 }
 
 
@@ -325,7 +459,7 @@ static int check_for_room(int file_size)
 static int assign_file(struct cfd* cfd, char *file)
 {
 	//Check if file is already cached - if yes, link the cfd to the already-cached file
-	struct file_cached* fc = find_in_cache(file); //return a pointer to the file cached
+	struct cache_page* fc = find_in_cache(file); //return a pointer to the file cached
 	if (fc)	return join(cfd,fc);
 
 	//If file is not in cache
@@ -340,8 +474,7 @@ static int assign_file(struct cfd* cfd, char *file)
 
 	fclose(f);
 	//is there room in the cache, and call the right function
-	//TODO: WRITE IF; Do the caching later - now assume cache is full and go directly to file
-	int cache_has_room = check_for_room(file_size); //0 if cache is full & no room - hence need to open file outside of cache
+	int cache_has_room = try_make_room(file_size); //0 if cache is full & no room - hence need to open file outside of cache
 	if (!cache_has_room)
 	{
 		return open_not_cached(cfd,file,file_size);
@@ -379,7 +512,6 @@ int cache_open(char *file)
 	struct cfd* temp = realloc(cache.client_mgr.clients,(sizeof(struct cfd)*cache.client_mgr.client_size)*2); //allocate's memory for 1 client
 	if (temp == cache.client_mgr.clients)
 	{
-		printf("Failure to reallocate client list");
 		pthread_mutex_unlock(&cache.cache_mu);
 		return -1;
 	}
@@ -425,7 +557,7 @@ int cache_filesize(int cfd)
 	{
 		if(curr->id==cfd)
 		{
-			int ret = curr->(curr);
+			int ret = curr->filesize_ptr(curr);
 			pthread_mutex_unlock(&cache.cache_mu);
 			return ret;
 		}
@@ -456,3 +588,14 @@ int cache_close(int cfd)
 	pthread_mutex_unlock(&cache.cache_mu);
 	return -1;
 }
+
+
+void cache_destroy()
+{
+	link_list_destroy(cache.not_cached_list);
+	link_list_destroy(cache.cached_list);
+	link_list_destroy(cache.cache_page_list);
+	free(cache.client_mgr.clients);
+}
+
+
