@@ -29,3 +29,8 @@ int cache_filesize(int cfd);
  * Return 0 if success, -1 if fail
  */
 int cache_close(int cfd);
+
+/*
+ * For test purposes only
+ */
+void cache_destroy();
